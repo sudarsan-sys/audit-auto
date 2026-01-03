@@ -1,17 +1,18 @@
-import { useState } from 'react';
-import { 
-  Upload, 
-  FileSpreadsheet, 
-  Play, 
-  Filter, 
+import { useState, useRef } from 'react';
+import {
+  Upload,
+  FileSpreadsheet,
+  Play,
+  Filter,
   Download,
   AlertTriangle,
   CheckCircle,
   Clock,
-  ChevronDown,
-  X,
   Loader2,
-  Eye
+  Eye,
+  X,
+  ArrowLeft,
+  FileText
 } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
@@ -32,27 +33,149 @@ import {
   SelectTrigger,
   SelectValue,
 } from '@/components/ui/select';
-import { cn } from '@/lib/utils';
+import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { mockTransactions } from '@/data/mockData';
+// Use relative path to ensure we find the service
+import { auditService, AuditResult } from '@/api';
+import { toast } from 'sonner';
+import { cn } from '@/lib/utils';
 
 export default function TransactionSentinel() {
+  // Dashboard States
   const [isAnalyzing, setIsAnalyzing] = useState(false);
   const [hasAnalyzed, setHasAnalyzed] = useState(true);
   const [selectedTransaction, setSelectedTransaction] = useState<typeof mockTransactions[0] | null>(null);
   const [severityFilter, setSeverityFilter] = useState<string>('all');
   const [statusFilter, setStatusFilter] = useState<string>('all');
-  const [showUpload, setShowUpload] = useState(false);
 
-  const handleAnalyze = () => {
-    setIsAnalyzing(true);
-    setTimeout(() => {
-      setIsAnalyzing(false);
-      setHasAnalyzed(true);
-    }, 3000);
+  // Upload & Real Audit States
+  const [showUpload, setShowUpload] = useState(false);
+  const [isUploading, setIsUploading] = useState(false);
+  const [auditResult, setAuditResult] = useState<AuditResult | null>(null); // Stores real backend result
+  const fileInputRef = useRef<HTMLInputElement>(null);
+
+  // --- REAL BACKEND UPLOAD LOGIC ---
+  const handleFileUpload = async (file: File) => {
+    if (!file) return;
+
+    // Check file type (PDF, CSV, Excel)
+    const validMimeTypes = [
+      'application/pdf',
+      'text/csv',
+      'application/vnd.ms-excel',
+      'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'
+    ];
+
+    // Also check extensions as fallback since MIME types can vary by OS
+    const validExtensions = ['.pdf', '.csv', '.xlsx', '.xls'];
+    const hasValidExtension = validExtensions.some(ext => file.name.toLowerCase().endsWith(ext));
+
+    if (!validMimeTypes.includes(file.type) && !hasValidExtension) {
+      toast.error("Please upload a PDF, CSV, or Excel file for auditing.");
+      return;
+    }
+
+    setIsUploading(true);
+    try {
+      toast.info("Uploading file for analysis...");
+      // Call Backend
+      const data = await auditService.uploadFile(file);
+
+      setAuditResult(data); // Save result to switch view
+      setShowUpload(false); // Close modal
+      toast.success("Analysis Complete!");
+    } catch (error) {
+      console.error("Analysis failed", error);
+      toast.error("Analysis failed. Check backend console.");
+    } finally {
+      setIsUploading(false);
+    }
   };
 
+  const triggerFileInput = () => fileInputRef.current?.click();
+
+  const onFileSelect = (e: React.ChangeEvent<HTMLInputElement>) => {
+    if (e.target.files?.[0]) handleFileUpload(e.target.files[0]);
+  };
+
+  // --- VIEW 1: REAL AUDIT REPORT (If file uploaded) ---
+  if (auditResult) {
+    return (
+      <div className="container mx-auto p-6 space-y-8 animate-in fade-in slide-in-from-bottom-4 duration-500">
+        <div className="flex items-center gap-4">
+          <Button variant="outline" onClick={() => setAuditResult(null)}>
+            <ArrowLeft className="mr-2 h-4 w-4" />
+            Back to Dashboard
+          </Button>
+          <h1 className="text-2xl font-bold">Audit Results</h1>
+        </div>
+
+        <div className="grid gap-6 md:grid-cols-2">
+          {/* Summary Card */}
+          <Card className="md:col-span-2">
+            <CardHeader>
+              <div className="flex justify-between items-center flex-wrap gap-4">
+                <div className="flex items-center gap-3">
+                  <FileText className="h-6 w-6 text-primary" />
+                  <CardTitle>{auditResult.filename}</CardTitle>
+                </div>
+                <div className={`px-4 py-1 rounded-full text-sm font-bold border ${auditResult.status === 'PASSED'
+                    ? 'bg-green-100 text-green-700 border-green-200'
+                    : auditResult.status === 'WARNING'
+                      ? 'bg-yellow-100 text-yellow-700 border-yellow-200'
+                      : 'bg-red-100 text-red-700 border-red-200'
+                  }`}>
+                  {auditResult.status} (Score: {auditResult.score})
+                </div>
+              </div>
+            </CardHeader>
+            <CardContent>
+              <p className="text-sm text-muted-foreground leading-relaxed whitespace-pre-wrap">
+                {auditResult.summary}
+              </p>
+            </CardContent>
+          </Card>
+
+          {/* Risks */}
+          <Card className="border-red-100 bg-red-50/10">
+            <CardHeader>
+              <CardTitle className="flex items-center text-red-700">
+                <AlertTriangle className="mr-2 h-5 w-5" />
+                Identified Risks
+              </CardTitle>
+            </CardHeader>
+            <CardContent>
+              <ul className="list-disc pl-5 space-y-2 text-sm text-red-900">
+                {auditResult.risks.map((risk, i) => (
+                  <li key={i}>{risk}</li>
+                ))}
+              </ul>
+            </CardContent>
+          </Card>
+
+          {/* Recommendations */}
+          <Card className="border-blue-100 bg-blue-50/10">
+            <CardHeader>
+              <CardTitle className="flex items-center text-blue-700">
+                <CheckCircle className="mr-2 h-5 w-5" />
+                Recommendations
+              </CardTitle>
+            </CardHeader>
+            <CardContent>
+              <ul className="list-disc pl-5 space-y-2 text-sm text-blue-900">
+                {auditResult.recommendations.map((rec, i) => (
+                  <li key={i}>{rec}</li>
+                ))}
+              </ul>
+            </CardContent>
+          </Card>
+        </div>
+      </div>
+    );
+  }
+
+  // --- VIEW 2: MOCK DASHBOARD (Default) ---
   const anomalies = mockTransactions.filter(t => t.issueType !== null);
-  
   const filteredTransactions = anomalies.filter(t => {
     if (severityFilter !== 'all' && t.severity !== severityFilter) return false;
     if (statusFilter !== 'all' && t.status !== statusFilter) return false;
@@ -61,40 +184,10 @@ export default function TransactionSentinel() {
 
   const severityBadge = (severity: string | null) => {
     switch (severity) {
-      case 'high':
-        return <Badge variant="destructive">High</Badge>;
-      case 'medium':
-        return <Badge variant="warning">Medium</Badge>;
-      case 'low':
-        return <Badge variant="info">Low</Badge>;
-      default:
-        return null;
-    }
-  };
-
-  const issueTypeBadge = (type: string | null) => {
-    switch (type) {
-      case 'Policy Violation':
-        return <Badge variant="destructive" className="text-xs">Policy Violation</Badge>;
-      case 'Semantic Anomaly':
-        return <Badge variant="warning" className="text-xs">Semantic Anomaly</Badge>;
-      case 'Pattern Alert':
-        return <Badge variant="info" className="text-xs">Pattern Alert</Badge>;
-      default:
-        return null;
-    }
-  };
-
-  const statusIcon = (status: string) => {
-    switch (status) {
-      case 'new':
-        return <AlertTriangle className="w-4 h-4 text-warning" />;
-      case 'reviewed':
-        return <Clock className="w-4 h-4 text-info" />;
-      case 'resolved':
-        return <CheckCircle className="w-4 h-4 text-success" />;
-      default:
-        return null;
+      case 'high': return <Badge variant="destructive">High</Badge>;
+      case 'medium': return <Badge variant="secondary" className="bg-yellow-100 text-yellow-800 border-0">Medium</Badge>;
+      case 'low': return <Badge variant="secondary" className="bg-blue-100 text-blue-800 border-0">Low</Badge>;
+      default: return null;
     }
   };
 
@@ -113,57 +206,45 @@ export default function TransactionSentinel() {
             <Upload className="w-4 h-4 mr-2" />
             Upload Data
           </Button>
-          <Button onClick={handleAnalyze} disabled={isAnalyzing}>
-            {isAnalyzing ? (
-              <>
-                <Loader2 className="w-4 h-4 mr-2 animate-spin" />
-                Analyzing...
-              </>
-            ) : (
-              <>
-                <Play className="w-4 h-4 mr-2" />
-                Run Analysis
-              </>
-            )}
+          <Button onClick={() => setIsAnalyzing(true)} disabled={isAnalyzing}>
+            {isAnalyzing ? <><Loader2 className="w-4 h-4 mr-2 animate-spin" /> Analyzing...</> : <><Play className="w-4 h-4 mr-2" /> Run Analysis</>}
           </Button>
         </div>
       </div>
 
       {/* Stats Cards */}
       <div className="grid grid-cols-1 sm:grid-cols-4 gap-4">
-        <div className="stat-card">
+        <div className="p-4 rounded-xl border bg-card text-card-foreground shadow-sm">
           <p className="text-sm text-muted-foreground">Total Transactions</p>
           <p className="text-2xl font-bold text-foreground mt-1">{mockTransactions.length}</p>
         </div>
-        <div className="stat-card">
+        <div className="p-4 rounded-xl border bg-card text-card-foreground shadow-sm">
           <p className="text-sm text-muted-foreground">Anomalies Detected</p>
           <p className="text-2xl font-bold text-destructive mt-1">{anomalies.length}</p>
         </div>
-        <div className="stat-card">
+        <div className="p-4 rounded-xl border bg-card text-card-foreground shadow-sm">
           <p className="text-sm text-muted-foreground">High Severity</p>
-          <p className="text-2xl font-bold text-warning mt-1">
+          <p className="text-2xl font-bold text-yellow-600 mt-1">
             {anomalies.filter(a => a.severity === 'high').length}
           </p>
         </div>
-        <div className="stat-card">
+        <div className="p-4 rounded-xl border bg-card text-card-foreground shadow-sm">
           <p className="text-sm text-muted-foreground">Resolved</p>
-          <p className="text-2xl font-bold text-success mt-1">
+          <p className="text-2xl font-bold text-green-600 mt-1">
             {anomalies.filter(a => a.status === 'resolved').length}
           </p>
         </div>
       </div>
 
       {/* Filters */}
-      <div className="module-card p-4">
+      <div className="p-4 rounded-xl border bg-card text-card-foreground shadow-sm">
         <div className="flex flex-wrap items-center gap-4">
           <div className="flex items-center gap-2">
             <Filter className="w-4 h-4 text-muted-foreground" />
             <span className="text-sm font-medium text-foreground">Filters:</span>
           </div>
           <Select value={severityFilter} onValueChange={setSeverityFilter}>
-            <SelectTrigger className="w-40">
-              <SelectValue placeholder="Severity" />
-            </SelectTrigger>
+            <SelectTrigger className="w-40"><SelectValue placeholder="Severity" /></SelectTrigger>
             <SelectContent>
               <SelectItem value="all">All Severities</SelectItem>
               <SelectItem value="high">High</SelectItem>
@@ -172,9 +253,7 @@ export default function TransactionSentinel() {
             </SelectContent>
           </Select>
           <Select value={statusFilter} onValueChange={setStatusFilter}>
-            <SelectTrigger className="w-40">
-              <SelectValue placeholder="Status" />
-            </SelectTrigger>
+            <SelectTrigger className="w-40"><SelectValue placeholder="Status" /></SelectTrigger>
             <SelectContent>
               <SelectItem value="all">All Statuses</SelectItem>
               <SelectItem value="new">New</SelectItem>
@@ -191,11 +270,11 @@ export default function TransactionSentinel() {
       </div>
 
       {/* Results Table */}
-      <div className="module-card overflow-hidden">
+      <div className="rounded-xl border bg-card text-card-foreground shadow-sm overflow-hidden">
         <ScrollArea className="max-h-[500px]">
           <Table>
             <TableHeader>
-              <TableRow className="bg-secondary/50">
+              <TableRow className="bg-muted/50">
                 <TableHead className="w-28">ID</TableHead>
                 <TableHead>Date</TableHead>
                 <TableHead>Vendor</TableHead>
@@ -208,30 +287,19 @@ export default function TransactionSentinel() {
             </TableHeader>
             <TableBody>
               {filteredTransactions.map((transaction) => (
-                <TableRow 
+                <TableRow
                   key={transaction.id}
-                  className="cursor-pointer hover:bg-secondary/30"
+                  className="cursor-pointer hover:bg-muted/50"
                   onClick={() => setSelectedTransaction(transaction)}
                 >
                   <TableCell className="font-mono text-sm">{transaction.id}</TableCell>
                   <TableCell>{transaction.date}</TableCell>
                   <TableCell className="font-medium">{transaction.vendor}</TableCell>
-                  <TableCell className="text-right font-medium">
-                    ${transaction.amount.toLocaleString()}
-                  </TableCell>
-                  <TableCell>{issueTypeBadge(transaction.issueType)}</TableCell>
+                  <TableCell className="text-right font-medium">${transaction.amount.toLocaleString()}</TableCell>
+                  <TableCell><Badge variant="outline">{transaction.issueType}</Badge></TableCell>
                   <TableCell>{severityBadge(transaction.severity)}</TableCell>
-                  <TableCell>
-                    <div className="flex items-center gap-2">
-                      {statusIcon(transaction.status)}
-                      <span className="capitalize text-sm">{transaction.status}</span>
-                    </div>
-                  </TableCell>
-                  <TableCell>
-                    <Button variant="ghost" size="icon">
-                      <Eye className="w-4 h-4" />
-                    </Button>
-                  </TableCell>
+                  <TableCell><span className="capitalize text-sm">{transaction.status}</span></TableCell>
+                  <TableCell><Button variant="ghost" size="icon"><Eye className="w-4 h-4" /></Button></TableCell>
                 </TableRow>
               ))}
             </TableBody>
@@ -239,123 +307,51 @@ export default function TransactionSentinel() {
         </ScrollArea>
       </div>
 
-      {/* Transaction Detail Modal */}
-      {selectedTransaction && (
-        <div className="fixed inset-0 bg-foreground/50 flex items-center justify-center z-50 animate-fade-in p-4">
-          <div className="bg-card rounded-xl shadow-lg w-full max-w-2xl animate-slide-up max-h-[90vh] overflow-hidden flex flex-col">
-            <div className="flex items-center justify-between p-4 border-b border-border">
-              <div className="flex items-center gap-3">
-                <h3 className="font-semibold text-foreground">{selectedTransaction.id}</h3>
-                {severityBadge(selectedTransaction.severity)}
-              </div>
-              <Button variant="ghost" size="icon" onClick={() => setSelectedTransaction(null)}>
-                <X className="w-4 h-4" />
-              </Button>
-            </div>
-            <ScrollArea className="flex-1 p-6">
-              <div className="space-y-6">
-                {/* Transaction Details */}
-                <div className="grid grid-cols-2 gap-4">
-                  <div>
-                    <p className="text-sm text-muted-foreground">Vendor</p>
-                    <p className="font-medium text-foreground">{selectedTransaction.vendor}</p>
-                  </div>
-                  <div>
-                    <p className="text-sm text-muted-foreground">Amount</p>
-                    <p className="font-medium text-foreground text-lg">${selectedTransaction.amount.toLocaleString()}</p>
-                  </div>
-                  <div>
-                    <p className="text-sm text-muted-foreground">Date</p>
-                    <p className="font-medium text-foreground">{selectedTransaction.date}</p>
-                  </div>
-                  <div>
-                    <p className="text-sm text-muted-foreground">Department</p>
-                    <p className="font-medium text-foreground">{selectedTransaction.department}</p>
-                  </div>
-                </div>
-
-                <div>
-                  <p className="text-sm text-muted-foreground">Description</p>
-                  <p className="font-medium text-foreground">{selectedTransaction.description}</p>
-                </div>
-
-                {/* AI Analysis */}
-                <div className="p-4 bg-secondary/50 rounded-lg space-y-3">
-                  <h4 className="font-medium text-foreground flex items-center gap-2">
-                    <AlertTriangle className="w-4 h-4 text-warning" />
-                    AI Analysis
-                  </h4>
-                  <p className="text-sm text-foreground leading-relaxed">
-                    This transaction was flagged due to a potential {selectedTransaction.issueType?.toLowerCase()}. 
-                    The payment amount of ${selectedTransaction.amount.toLocaleString()} exceeds the typical range for 
-                    {selectedTransaction.department} department transactions. Historical analysis shows similar 
-                    vendor payments averaging $15,000 lower than this transaction.
-                  </p>
-                  <div className="flex items-center gap-2 pt-2">
-                    <Badge variant="outline">Related Policy: Procurement Guidelines</Badge>
-                  </div>
-                </div>
-
-                {/* Similar Transactions */}
-                <div>
-                  <h4 className="font-medium text-foreground mb-3">Similar Historical Transactions</h4>
-                  <div className="space-y-2">
-                    {[1, 2].map((i) => (
-                      <div key={i} className="flex items-center justify-between p-3 bg-secondary/30 rounded-lg">
-                        <div>
-                          <p className="text-sm font-medium text-foreground">{selectedTransaction.vendor}</p>
-                          <p className="text-xs text-muted-foreground">2023-{12 - i}-15</p>
-                        </div>
-                        <p className="font-medium text-foreground">
-                          ${(selectedTransaction.amount * (0.7 + i * 0.1)).toLocaleString(undefined, { maximumFractionDigits: 0 })}
-                        </p>
-                      </div>
-                    ))}
-                  </div>
-                </div>
-              </div>
-            </ScrollArea>
-            <div className="flex justify-end gap-2 p-4 border-t border-border">
-              <Button variant="outline" onClick={() => setSelectedTransaction(null)}>
-                Mark as False Positive
-              </Button>
-              <Button variant="outline">Dismiss</Button>
-              <Button>Create Finding</Button>
-            </div>
-          </div>
-        </div>
-      )}
-
-      {/* Upload Modal */}
+      {/* Upload Modal (Connected to Backend) */}
       {showUpload && (
-        <div className="fixed inset-0 bg-foreground/50 flex items-center justify-center z-50 animate-fade-in p-4">
-          <div className="bg-card rounded-xl shadow-lg w-full max-w-lg animate-slide-up">
-            <div className="flex items-center justify-between p-4 border-b border-border">
-              <h3 className="font-semibold text-foreground">Upload Transaction Data</h3>
-              <Button variant="ghost" size="icon" onClick={() => setShowUpload(false)}>
+        <div className="fixed inset-0 bg-background/80 backdrop-blur-sm flex items-center justify-center z-50 animate-in fade-in duration-200 p-4">
+          <div className="bg-card rounded-xl shadow-lg w-full max-w-lg animate-in slide-in-from-bottom-10 border">
+            <div className="flex items-center justify-between p-4 border-b">
+              <h3 className="font-semibold text-foreground">Upload for Real Audit</h3>
+              <Button variant="ghost" size="icon" onClick={() => setShowUpload(false)} disabled={isUploading}>
                 <X className="w-4 h-4" />
               </Button>
             </div>
+
             <div className="p-6 space-y-4">
-              <div className="border-2 border-dashed border-border rounded-xl p-8 text-center">
-                <FileSpreadsheet className="w-10 h-10 text-muted-foreground mx-auto mb-4" />
-                <p className="text-foreground font-medium">Drop your CSV or Excel file here</p>
-                <p className="text-sm text-muted-foreground mt-1">or click to browse</p>
-              </div>
-              <div className="text-sm text-muted-foreground">
-                <p className="font-medium text-foreground mb-2">Required columns:</p>
-                <ul className="list-disc list-inside space-y-1">
-                  <li>Date (YYYY-MM-DD)</li>
-                  <li>Amount (numeric)</li>
-                  <li>Vendor name</li>
-                  <li>Description</li>
-                  <li>Department (optional)</li>
-                </ul>
+              <input
+                type="file"
+                ref={fileInputRef}
+                onChange={onFileSelect}
+                className="hidden"
+                accept=".pdf,.csv,.xlsx,.xls"
+              />
+
+              <div
+                className={cn(
+                  "border-2 border-dashed border-border rounded-xl p-8 text-center hover:bg-muted/50 transition-colors cursor-pointer",
+                  isUploading && "opacity-50 pointer-events-none"
+                )}
+                onClick={triggerFileInput}
+              >
+                {isUploading ? (
+                  <div className="flex flex-col items-center">
+                    <Loader2 className="w-10 h-10 text-primary animate-spin mb-4" />
+                    <p className="font-medium">Auditing Document...</p>
+                    <p className="text-sm text-muted-foreground">Sending to Gemini AI</p>
+                  </div>
+                ) : (
+                  <>
+                    <FileSpreadsheet className="w-10 h-10 text-muted-foreground mx-auto mb-4" />
+                    <p className="text-foreground font-medium">Click to Upload PDF or CSV</p>
+                    <p className="text-sm text-muted-foreground mt-1">We will audit it instantly</p>
+                  </>
+                )}
               </div>
             </div>
-            <div className="flex justify-end gap-2 p-4 border-t border-border">
-              <Button variant="outline" onClick={() => setShowUpload(false)}>Cancel</Button>
-              <Button onClick={() => setShowUpload(false)}>Upload & Preview</Button>
+
+            <div className="flex justify-end gap-2 p-4 border-t bg-muted/20 rounded-b-xl">
+              <Button variant="outline" onClick={() => setShowUpload(false)} disabled={isUploading}>Cancel</Button>
             </div>
           </div>
         </div>

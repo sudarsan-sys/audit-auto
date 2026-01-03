@@ -1,56 +1,137 @@
-import { useState } from 'react';
-import { 
-  Search, 
-  Upload, 
-  FileText, 
-  FileType, 
-  ThumbsUp, 
-  ThumbsDown, 
+import { useState, useRef } from 'react';
+import {
+  Search,
+  Upload,
+  FileText,
+  FileType,
+  ThumbsUp,
+  ThumbsDown,
   Send,
   Filter,
   ChevronRight,
   Loader2,
   CheckCircle,
-  X
+  X,
+  Bot,
+  User
 } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Badge } from '@/components/ui/badge';
 import { ScrollArea } from '@/components/ui/scroll-area';
 import { cn } from '@/lib/utils';
-import { mockPolicies, mockQAHistory } from '@/data/mockData';
+import { mockPolicies } from '@/data/mockData';
+// We use the relative path to ensure it finds the file in src/services/api.ts
+import { auditService } from '@/api';
+import { toast } from 'sonner';
+
+// Define the shape of our Chat History items
+interface QAItem {
+  id: string;
+  question: string;
+  answer: string;
+  source: string;
+  page?: number;
+  confidence?: number;
+  timestamp: string;
+}
 
 export default function PolicyNavigator() {
   const [selectedPolicy, setSelectedPolicy] = useState<string | null>(null);
   const [searchQuery, setSearchQuery] = useState('');
+
+  // Chat States
   const [question, setQuestion] = useState('');
   const [isAsking, setIsAsking] = useState(false);
-  const [qaHistory, setQaHistory] = useState(mockQAHistory);
+  const [qaHistory, setQaHistory] = useState<QAItem[]>([]);
+
+  // Upload States
   const [showUpload, setShowUpload] = useState(false);
   const [isDragging, setIsDragging] = useState(false);
+  const [isUploading, setIsUploading] = useState(false);
+  const fileInputRef = useRef<HTMLInputElement>(null);
 
-  const handleAskQuestion = () => {
+  // --- 1. CHAT LOGIC ---
+  const handleAskQuestion = async () => {
     if (!question.trim()) return;
+
     setIsAsking(true);
-    
-    // Simulate AI response
-    setTimeout(() => {
-      const newQA = {
+    const currentQuestion = question;
+    setQuestion(''); // Clear input immediately
+
+    try {
+      // Call the Python Backend
+      const data = await auditService.askQuestion(currentQuestion);
+
+      // Format the response
+      const newQA: QAItem = {
         id: `qa-${Date.now()}`,
-        question: question,
-        answer: 'Based on the policy documents, the answer to your question involves reviewing Section 4.2 of the Procurement Guidelines which outlines the approval thresholds and required documentation for vendor payments. Specifically, all payments above $25,000 require competitive bidding.',
-        source: 'Procurement Guidelines',
-        page: 15,
-        confidence: 0.91,
+        question: currentQuestion,
+        answer: data.answer || "No answer found.",
+        // Map backend sources if available
+        source: data.sources?.filename || 'Knowledge Base',
+        page: 1,
+        confidence: 0.95,
         timestamp: new Date().toISOString(),
       };
-      setQaHistory([newQA, ...qaHistory]);
-      setQuestion('');
+
+      setQaHistory(prev => [newQA, ...prev]);
+    } catch (error) {
+      console.error("RAG Error:", error);
+      toast.error("Failed to reach the AI. Is the backend running?");
+    } finally {
       setIsAsking(false);
-    }, 2000);
+    }
   };
 
-  const filteredPolicies = mockPolicies.filter(p => 
+  // --- 2. UPLOAD LOGIC (NEW) ---
+  const handleFileUpload = async (file: File) => {
+    if (!file) return;
+
+    // Validate file type
+    if (file.type !== 'application/pdf') {
+      toast.error("Please upload a PDF file.");
+      return;
+    }
+
+    setIsUploading(true);
+    try {
+      toast.info("Uploading and indexing document...");
+
+      // This endpoint uploads the file AND adds it to ChromaDB
+      await auditService.uploadFile(file);
+
+      toast.success(`${file.name} successfully added to Knowledge Base!`);
+      setShowUpload(false);
+    } catch (error) {
+      console.error("Upload failed", error);
+      toast.error("Failed to upload. Check if backend is running.");
+    } finally {
+      setIsUploading(false);
+    }
+  };
+
+  const onFileSelect = (e: React.ChangeEvent<HTMLInputElement>) => {
+    if (e.target.files && e.target.files[0]) {
+      handleFileUpload(e.target.files[0]);
+    }
+  };
+
+  const onDrop = (e: React.DragEvent) => {
+    e.preventDefault();
+    setIsDragging(false);
+    if (e.dataTransfer.files && e.dataTransfer.files[0]) {
+      handleFileUpload(e.dataTransfer.files[0]);
+    }
+  };
+
+  const triggerFileInput = () => {
+    fileInputRef.current?.click();
+  };
+
+
+  // Filtering logic for the sidebar list
+  const filteredPolicies = mockPolicies.filter(p =>
     p.name.toLowerCase().includes(searchQuery.toLowerCase()) ||
     p.category.toLowerCase().includes(searchQuery.toLowerCase())
   );
@@ -65,7 +146,7 @@ export default function PolicyNavigator() {
   return (
     <div className="flex h-[calc(100vh-4rem)]">
       {/* Sidebar - Policy List */}
-      <div className="w-80 border-r border-border bg-card flex flex-col">
+      <div className="w-80 border-r border-border bg-card flex flex-col hidden md:flex">
         <div className="p-4 border-b border-border space-y-4">
           <div className="flex items-center gap-2">
             <div className="relative flex-1">
@@ -81,8 +162,8 @@ export default function PolicyNavigator() {
               <Filter className="w-4 h-4" />
             </Button>
           </div>
-          <Button 
-            className="w-full gap-2" 
+          <Button
+            className="w-full gap-2"
             onClick={() => setShowUpload(true)}
           >
             <Upload className="w-4 h-4" />
@@ -138,8 +219,7 @@ export default function PolicyNavigator() {
 
       {/* Main Content - Q&A Interface */}
       <div className="flex-1 flex flex-col bg-background">
-        {/* Search Bar */}
-        <div className="p-6 border-b border-border">
+        <div className="p-6 border-b border-border bg-card/50">
           <div className="max-w-3xl mx-auto">
             <div className="relative">
               <Search className="absolute left-4 top-1/2 -translate-y-1/2 w-5 h-5 text-muted-foreground" />
@@ -148,9 +228,10 @@ export default function PolicyNavigator() {
                 value={question}
                 onChange={(e) => setQuestion(e.target.value)}
                 onKeyDown={(e) => e.key === 'Enter' && handleAskQuestion()}
-                className="pl-12 pr-24 h-14 text-base rounded-xl bg-card border-2 focus:border-accent"
+                className="pl-12 pr-24 h-14 text-base rounded-xl bg-background border-2 focus:border-primary/20 shadow-sm"
+                disabled={isAsking}
               />
-              <Button 
+              <Button
                 className="absolute right-2 top-1/2 -translate-y-1/2 gap-2"
                 onClick={handleAskQuestion}
                 disabled={isAsking || !question.trim()}
@@ -164,58 +245,64 @@ export default function PolicyNavigator() {
               </Button>
             </div>
             <p className="text-sm text-muted-foreground mt-2 text-center">
-              Try: "What is the approval threshold for travel expenses?"
+              Try: "What is the approval threshold for travel?" or "Summarize the procurement risks."
             </p>
           </div>
         </div>
 
-        {/* Q&A History */}
         <ScrollArea className="flex-1 p-6">
-          <div className="max-w-3xl mx-auto space-y-6">
+          <div className="max-w-3xl mx-auto space-y-8">
+            {qaHistory.length === 0 && (
+              <div className="flex flex-col items-center justify-center h-64 text-muted-foreground opacity-50">
+                <Bot className="w-16 h-16 mb-4" />
+                <p>No questions asked yet. Upload a policy to get started.</p>
+              </div>
+            )}
+
             {qaHistory.map((qa, index) => (
-              <div 
-                key={qa.id} 
-                className="space-y-4 animate-slide-up"
-                style={{ animationDelay: `${index * 50}ms` }}
+              <div
+                key={qa.id}
+                className="space-y-4 animate-in slide-in-from-bottom-2 fade-in duration-500"
               >
-                {/* Question */}
                 <div className="flex justify-end">
-                  <div className="bg-primary text-primary-foreground rounded-2xl rounded-tr-md px-4 py-3 max-w-[80%]">
-                    <p className="text-sm">{qa.question}</p>
+                  <div className="bg-primary text-primary-foreground rounded-2xl rounded-tr-sm px-5 py-3 max-w-[85%] shadow-sm">
+                    <p className="text-sm font-medium">{qa.question}</p>
+                  </div>
+                  <div className="w-8 h-8 rounded-full bg-primary/10 flex items-center justify-center ml-3 flex-shrink-0">
+                    <User className="w-4 h-4 text-primary" />
                   </div>
                 </div>
 
-                {/* Answer */}
                 <div className="flex gap-3">
-                  <div className="w-8 h-8 rounded-full bg-accent/10 flex items-center justify-center flex-shrink-0">
-                    <CheckCircle className="w-4 h-4 text-accent" />
+                  <div className="w-8 h-8 rounded-full bg-emerald-500/10 flex items-center justify-center flex-shrink-0 mt-1">
+                    <Bot className="w-5 h-5 text-emerald-600" />
                   </div>
                   <div className="flex-1 space-y-3">
-                    <div className="bg-card border border-border rounded-2xl rounded-tl-md p-4">
-                      <p className="text-sm text-foreground leading-relaxed">{qa.answer}</p>
-                      
-                      {/* Source Citation */}
-                      <div className="mt-4 p-3 bg-secondary/50 rounded-lg">
-                        <div className="flex items-center justify-between">
+                    <div className="bg-card border border-border rounded-2xl rounded-tl-sm p-5 shadow-sm">
+                      <p className="text-sm text-foreground leading-relaxed whitespace-pre-wrap">{qa.answer}</p>
+
+                      <div className="mt-4 p-3 bg-secondary/50 rounded-lg border border-border/50">
+                        <div className="flex items-center justify-between flex-wrap gap-2">
                           <div className="flex items-center gap-2">
                             <FileText className="w-4 h-4 text-primary" />
                             <span className="text-sm font-medium text-foreground">{qa.source}</span>
-                            <span className="text-sm text-muted-foreground">• Page {qa.page}</span>
+                            {qa.page && <span className="text-sm text-muted-foreground">• Page {qa.page}</span>}
                           </div>
-                          <Badge variant="success" className="text-xs">
-                            {Math.round(qa.confidence * 100)}% confident
-                          </Badge>
+                          {qa.confidence && (
+                            <Badge variant="secondary" className="bg-emerald-500/10 text-emerald-700 hover:bg-emerald-500/20 border-0">
+                              {Math.round(qa.confidence * 100)}% Match
+                            </Badge>
+                          )}
                         </div>
                       </div>
                     </div>
 
-                    {/* Feedback */}
-                    <div className="flex items-center gap-2">
+                    <div className="flex items-center gap-2 pl-2">
                       <span className="text-xs text-muted-foreground">Was this helpful?</span>
-                      <Button variant="ghost" size="sm" className="h-7 px-2">
+                      <Button variant="ghost" size="sm" className="h-6 w-6 p-0 hover:text-green-600">
                         <ThumbsUp className="w-3.5 h-3.5" />
                       </Button>
-                      <Button variant="ghost" size="sm" className="h-7 px-2">
+                      <Button variant="ghost" size="sm" className="h-6 w-6 p-0 hover:text-red-600">
                         <ThumbsDown className="w-3.5 h-3.5" />
                       </Button>
                     </div>
@@ -223,39 +310,80 @@ export default function PolicyNavigator() {
                 </div>
               </div>
             ))}
+
+            {isAsking && (
+              <div className="flex gap-3 animate-pulse">
+                <div className="w-8 h-8 rounded-full bg-emerald-500/10 flex items-center justify-center flex-shrink-0">
+                  <Bot className="w-5 h-5 text-emerald-600" />
+                </div>
+                <div className="bg-muted/50 rounded-2xl rounded-tl-sm px-5 py-3">
+                  <div className="flex items-center gap-2">
+                    <Loader2 className="w-3 h-3 animate-spin text-muted-foreground" />
+                    <span className="text-sm text-muted-foreground">Analyzing documents...</span>
+                  </div>
+                </div>
+              </div>
+            )}
           </div>
         </ScrollArea>
       </div>
 
-      {/* Upload Modal */}
+      {/* Upload Modal - FULLY FUNCTIONAL */}
       {showUpload && (
-        <div className="fixed inset-0 bg-foreground/50 flex items-center justify-center z-50 animate-fade-in">
-          <div className="bg-card rounded-xl shadow-lg w-full max-w-lg mx-4 animate-slide-up">
+        <div className="fixed inset-0 bg-background/80 backdrop-blur-sm flex items-center justify-center z-50 animate-in fade-in duration-200">
+          <div className="bg-card rounded-xl shadow-lg w-full max-w-lg mx-4 border border-border">
             <div className="flex items-center justify-between p-4 border-b border-border">
               <h3 className="font-semibold text-foreground">Upload Policy Document</h3>
               <Button variant="ghost" size="icon" onClick={() => setShowUpload(false)}>
                 <X className="w-4 h-4" />
               </Button>
             </div>
+
             <div className="p-6">
-              <div 
+              {/* Hidden Input for Click-to-Upload */}
+              <input
+                type="file"
+                ref={fileInputRef}
+                onChange={onFileSelect}
+                className="hidden"
+                accept=".pdf"
+              />
+
+              <div
                 className={cn(
-                  'border-2 border-dashed rounded-xl p-8 text-center transition-colors',
-                  isDragging ? 'border-accent bg-accent/5' : 'border-border'
+                  'border-2 border-dashed rounded-xl p-8 text-center transition-all duration-200 cursor-pointer',
+                  isDragging ? 'border-primary bg-primary/5 scale-[1.02]' : 'border-border hover:border-primary/50'
                 )}
                 onDragOver={(e) => { e.preventDefault(); setIsDragging(true); }}
                 onDragLeave={() => setIsDragging(false)}
-                onDrop={() => { setIsDragging(false); setShowUpload(false); }}
+                onDrop={onDrop}
+                onClick={triggerFileInput}
               >
-                <Upload className="w-10 h-10 text-muted-foreground mx-auto mb-4" />
-                <p className="text-foreground font-medium">Drag and drop your file here</p>
-                <p className="text-sm text-muted-foreground mt-1">or click to browse</p>
-                <p className="text-xs text-muted-foreground mt-4">Supports PDF, DOCX (Max 50MB)</p>
+                {isUploading ? (
+                  <div className="py-4">
+                    <Loader2 className="w-10 h-10 text-primary animate-spin mx-auto mb-4" />
+                    <p className="text-foreground font-medium">Processing & Indexing...</p>
+                    <p className="text-xs text-muted-foreground mt-2">Sending to AI Brain & Vector DB</p>
+                  </div>
+                ) : (
+                  <>
+                    <div className="w-12 h-12 bg-primary/10 rounded-full flex items-center justify-center mx-auto mb-4">
+                      <Upload className="w-6 h-6 text-primary" />
+                    </div>
+                    <p className="text-foreground font-medium text-lg">Drag and drop your PDF here</p>
+                    <p className="text-sm text-muted-foreground mt-1">or click to browse</p>
+                  </>
+                )}
               </div>
             </div>
-            <div className="flex justify-end gap-2 p-4 border-t border-border">
-              <Button variant="outline" onClick={() => setShowUpload(false)}>Cancel</Button>
-              <Button>Upload</Button>
+
+            <div className="flex justify-end gap-2 p-4 border-t border-border bg-muted/20 rounded-b-xl">
+              <Button variant="outline" onClick={() => setShowUpload(false)} disabled={isUploading}>
+                Cancel
+              </Button>
+              <Button onClick={triggerFileInput} disabled={isUploading}>
+                {isUploading ? 'Uploading...' : 'Select File'}
+              </Button>
             </div>
           </div>
         </div>
