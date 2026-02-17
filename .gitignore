@@ -22,3 +22,20 @@ dist-ssr
 *.njsproj
 *.sln
 *.sw?
+
+# Python
+__pycache__/
+*.pyc
+venv/
+.venv/
+
+# Environment Variables (CRITICAL)
+.env
+.env.local
+
+# Database
+chroma_db/
+audit.db
+
+# Uploads
+uploads/
